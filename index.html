@@ -163,10 +163,10 @@
   <!-- Non-intrusive Automated Benchmark Progress Banner -->
   <div id="bench-banner" class="bench-banner hidden" role="status" aria-live="polite">
     <div class="bench-banner-head">
-      <strong id="bench-status-title">公平ベンチマーク計測中...</strong>
+      <strong id="bench-status-title">横画面フルスクリーン公平ベンチマーク計測中...</strong>
       <button id="btn-cancel-bench" class="btn-ghost-sm" type="button">中断</button>
     </div>
-    <p id="bench-status-detail" class="bench-status-detail">各エンジンを単独フルスクリーンで順番に計測し、GPU/CPU競合を排除しています。</p>
+    <p id="bench-status-detail" class="bench-status-detail">横画面フルスクリーンへ自動切替し、各エンジンを単独計測して結果を自動収集します。</p>
     <div class="bench-progress-track">
       <div id="bench-progress-fill" class="bench-progress-fill" style="width: 0%"></div>
     </div>
@@ -178,7 +178,7 @@
       <div class="modal-header">
         <div>
           <h2 id="report-modal-title">性能比較レポート — 自作エンジン vs Three.js</h2>
-          <p class="modal-subtitle" id="report-env-info">同一シーン・同一物理アルゴリズム・単独フルスクリーン計測</p>
+          <p class="modal-subtitle" id="report-env-info">同一シーン・同一物理アルゴリズム・横画面フルスクリーン単独計測</p>
         </div>
         <div class="modal-header-actions">
           <button id="btn-bench-current" class="btn-secondary-sm" type="button">現シナリオを再計測</button>
@@ -189,10 +189,21 @@
 
       <div class="modal-body" id="report-body">
         <div id="report-empty" class="report-empty">
-          <p>まだ単独フルスクリーンでのベンチマーク結果がありません。「現シナリオを再計測」または「全3シナリオ総合計測」を実行すると、CPU・GPU競合のない正確な比較データとグラフを生成します。</p>
+          <p>まだ単独フルスクリーンでのベンチマーク結果がありません。「現シナリオを再計測」または「全3シナリオ総合計測」を実行すると、自動で横画面フルスクリーンに切り替えて計測し、デバイス情報・User-Agentとともに結果を自動収集します。</p>
         </div>
 
         <div id="report-content" class="hidden">
+          <div id="telemetry-status-bar" class="telemetry-bar hidden">
+            <div class="telemetry-bar-left">
+              <span id="telemetry-dot" class="telemetry-dot"></span>
+              <span id="telemetry-status-text">計測結果を自動送信中...</span>
+            </div>
+            <div class="telemetry-bar-actions">
+              <button id="btn-retry-upload" class="btn-ghost-sm hidden" type="button">再送信</button>
+              <button id="btn-copy-json" class="btn-ghost-sm" type="button">計測JSONをコピー</button>
+            </div>
+          </div>
+
           <div class="summary-kpis" id="report-kpis"></div>
 
           <section class="report-section">
@@ -226,7 +237,41 @@
               </table>
             </div>
           </section>
+
+          <details class="device-details" id="device-details">
+            <summary>収集されたデバイス情報・User-Agent を表示</summary>
+            <pre id="device-json-preview" class="device-json-pre"></pre>
+          </details>
         </div>
+
+        <!-- Collected Cross-Device Results from Cloudflare D1 -->
+        <section class="report-section">
+          <div class="section-head-row">
+            <h3>収集済みデバイス計測ログ <span id="collected-total-badge" class="count-badge">-- 件</span></h3>
+            <div class="section-head-actions">
+              <a id="telemetry-api-link" class="api-link" href="https://threejs-vs-no-threejs-telemetry.6u.workers.dev/api/results" target="_blank" rel="noopener">JSON API</a>
+              <button id="btn-refresh-collected" class="btn-ghost-sm" type="button">更新</button>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table class="metrics-table collected-table">
+              <thead>
+                <tr>
+                  <th>計測日時</th>
+                  <th>GPU / デバイス・OS</th>
+                  <th>解像度 / 画面</th>
+                  <th>シナリオ</th>
+                  <th>自作 FPS / CPU</th>
+                  <th>Three.js FPS / CPU</th>
+                  <th>CPU倍率</th>
+                </tr>
+              </thead>
+              <tbody id="collected-tbody">
+                <tr><td colspan="7" class="table-placeholder">読み込み中...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
 
         <!-- Static Architectural & Payload Comparison (always visible) -->
         <section class="report-section">

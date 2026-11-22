@@ -60,20 +60,34 @@
 
 ---
 
+## 自動横画面フルスクリーン計測 & 結果自動収集（Cloudflare Workers + D1）
+
+- **横画面フルスクリーン自動切替**: 「自動ベンチマーク」開始時に Fullscreen API（`requestFullscreen`）＋ Screen Orientation API（`screen.orientation.lock('landscape')`）で自動的に横画面フルスクリーンへ切り替えて計測し、終了時に自動復帰します（`orientation.lock` 非対応の iOS Safari 等では CSS 回転フォールバックで横画面比率を維持）。
+- **デバイス情報・User-Agent 込みの自動収集**: 計測完了時に User-Agent、`navigator.userAgentData`（OS・アーキテクチャ・モバイル判定・モデル等）、WebGPU アダプタ情報、WebGL アンマスク GPU 名、CPU コア数、メモリ、画面解像度・DPR・フルスクリーン状態を自動送信し、Cloudflare D1 へ保存します。
+- **公開テレメトリ API (Cloudflare Workers)**:
+  - 一覧取得: `GET https://threejs-vs-no-threejs-telemetry.6u.workers.dev/api/results`
+  - 集計サマリー: `GET https://threejs-vs-no-threejs-telemetry.6u.workers.dev/api/summary`
+  - 個別詳細: `GET https://threejs-vs-no-threejs-telemetry.6u.workers.dev/api/results/:id`
+
+---
+
 ## ディレクトリ構成
 
 ```text
 .
 ├── index.html                        # アプリUI（同時比較・単独モード・自動ベンチマーク・比較レポート）
-├── styles.css                        # バニラCSSデザインシステム
+├── styles.css                        # バニラCSSデザインシステム（横画面フルスクリーン対応）
+├── worker/
+│   ├── index.js                      # ゼロ依存 Cloudflare Worker テレメトリAPI
+│   └── schema.sql                    # Cloudflare D1 SQLite スキーマ
 ├── wasm/
 │   ├── src/lib.rs                    # 純 #![no_std] Rust Wasm SIMD128 物理・カリングコア（クレート0）
 │   ├── build.sh                      # rustc ビルドスクリプト
 │   ├── engine_simd.wasm              # コンパイル済み Wasm SIMD128 バイナリ (10.8 KB)
 │   └── engine_scalar.wasm            # スカラーフォールバック Wasm (6.1 KB)
 ├── src/
-│   ├── main.js                       # アプリ制御・同期カメラ・自動ベンチマークハーネス
-│   ├── shared/                       # 両エンジン共通のジオメトリ・シード・カメラ・JS物理・メトリクス
+│   ├── main.js                       # アプリ制御・横画面フルスクリーン計測・自動送信
+│   ├── shared/                       # ジオメトリ・シード・カメラ・JS物理・メトリクス・テレメトリ送信
 │   ├── custom-engine/                # 自作エンジン (wasm-bridge / WGSL shaders / WebGPU / WebGL2)
 │   └── three-engine/                 # Three.js v0.187 エンジン (WebGPURenderer + TSL / WebGLRenderer)
 └── vendor/three/                     # 公式 Three.js v0.187.0 ESモジュール（他ライブラリ一切なし）

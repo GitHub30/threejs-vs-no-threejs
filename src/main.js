@@ -8,6 +8,12 @@ import {
   drawSparkline,
   FrameTelemetry,
 } from './shared/metrics.js';
+import {
+  collectDeviceInfo,
+  fetchRecentResults,
+  formatRunDeviceLabel,
+  submitBenchmarkResult,
+} from './shared/telemetry-client.js';
 import { CustomWebGPUEngine } from './custom-engine/webgpu-engine.js';
 import { CustomWebGL2Engine } from './custom-engine/webgl2-fallback.js';
 import { ThreeJSEngine } from './three-engine/three-engine.js';
@@ -74,6 +80,16 @@ const dom = {
   btnBenchCurrent: document.getElementById('btn-bench-current'),
   btnBenchAll: document.getElementById('btn-bench-all'),
   btnCloseReport: document.getElementById('btn-close-report'),
+
+  // Telemetry & Collected Results UI
+  telemetryBar: document.getElementById('telemetry-status-bar'),
+  telemetryStatusText: document.getElementById('telemetry-status-text'),
+  btnRetryUpload: document.getElementById('btn-retry-upload'),
+  btnCopyJson: document.getElementById('btn-copy-json'),
+  deviceJsonPreview: document.getElementById('device-json-preview'),
+  collectedTotalBadge: document.getElementById('collected-total-badge'),
+  collectedTbody: document.getElementById('collected-tbody'),
+  btnRefreshCollected: document.getElementById('btn-refresh-collected'),
 };
 
 const state = {
@@ -95,6 +111,9 @@ const state = {
   benchmarkRunning: false,
   benchmarkCancelled: false,
   benchmarkResults: [], // Array of { scenario, count, custom, three }
+  lastDeviceInfo: null,
+  lastSubmittedPayload: null,
+  lastUploadResult: null,
 };
 
 function populateCountSelect(scenarioId, selectedCount) {
@@ -329,10 +348,208 @@ async function measureEngineSolo(engineKey, scenarioId, count, durationMs = 2400
   return stats;
 }
 
-async function runAutomatedBenchmark(runAllScenarios = false, durationPerEngineMs = 2400) {
-  if (state.benchmarkRunning) return;
+// --- Automatic Landscape Fullscreen Controller for Fair Benchmarking ---
+
+function requestLandscapeFullscreenSync() {
+  // MUST be called synchronously inside user click gesture before any await
+  const el = document.documentElement;
+  let fsPromise = null;
+  try {
+    if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+      if (typeof el.requestFullscreen === 'function') {
+        fsPromise = el.requestFullscreen({ navigationUI: 'hide' }).catch(() => {
+          // Retry without options for older browsers
+          return el.requestFullscreen().catch(() => null);
+        });
+      } else if (typeof el.webkitRequestFullscreen === 'function') {
+        el.webkitRequestFullscreen();
+      }
+    }
+  } catch {
+    // Ignore if fullscreen is blocked by policy or iframe
+  }
+  return fsPromise;
+}
+
+async function enterBenchmarkLandscapeFullscreen(fsPromise) {
+  const fsState = {
+    enteredNative: false,
+    orientationLocked: false,
+    cssLandscapeFallback: false,
+  };
+
+  if (fsPromise) {
+    try {
+      await Promise.race([fsPromise, sleep(400)]);
+    } catch {}
+  }
+
+  fsState.enteredNative = !!(document.fullscreenElement || document.webkitFullscreenElement);
+
+  // Attempt native Screen Orientation lock to landscape (works on Android Chrome/Edge etc.)
+  try {
+    if (window.screen?.orientation && typeof window.screen.orientation.lock === 'function') {
+      const lockResult = await Promise.race([
+        window.screen.orientation.lock('landscape').then(() => true).catch(() => false),
+        sleep(300).then(() => false),
+      ]);
+      fsState.orientationLocked = !!lockResult;
+    }
+  } catch {
+    // Desktop browsers & iOS Safari throw NotSupportedError; handle gracefully below
+  }
+
+  document.body.classList.add('bench-fullscreen-active');
+
+  // Allow browser fullscreen/orientation transition to settle
+  await sleep(160);
+
+  // If viewport is still portrait (e.g. iOS Safari without orientation.lock), apply CSS landscape rotation
+  if (window.innerHeight > window.innerWidth) {
+    document.body.classList.add('bench-force-landscape');
+    fsState.cssLandscapeFallback = true;
+  }
+
+  handleResize();
+  await waitWarmup(2, 2, 120);
+  handleResize();
+
+  return fsState;
+}
+
+async function exitBenchmarkLandscapeFullscreen() {
+  document.body.classList.remove('bench-force-landscape', 'bench-fullscreen-active');
+  try {
+    window.screen?.orientation?.unlock?.();
+  } catch {}
+  try {
+    if (document.fullscreenElement && typeof document.exitFullscreen === 'function') {
+      await document.exitFullscreen();
+    } else if (document.webkitFullscreenElement && typeof document.webkitExitFullscreen === 'function') {
+      document.webkitExitFullscreen();
+    }
+  } catch {}
+  await sleep(80);
+  handleResize();
+}
+
+function escapeHtml(str) {
+  return String(str ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function setTelemetryBarState(mode, text, showRetry = false) {
+  if (!dom.telemetryBar) return;
+  dom.telemetryBar.classList.remove('hidden', 'status-sending', 'status-error');
+  if (mode === 'sending') dom.telemetryBar.classList.add('status-sending');
+  if (mode === 'error') dom.telemetryBar.classList.add('status-error');
+  dom.telemetryStatusText.textContent = text;
+  dom.btnRetryUpload.classList.toggle('hidden', !showRetry);
+}
+
+async function uploadBenchmarkPayload(payload) {
+  state.lastSubmittedPayload = payload;
+  setTelemetryBarState('sending', '計測結果（デバイス情報・User-Agent含む）を自動収集サーバーへ送信中...', false);
+
+  const res = await submitBenchmarkResult(payload);
+  state.lastUploadResult = res;
+
+  if (res.ok) {
+    const shortId = String(res.id || '').slice(0, 8);
+    setTelemetryBarState(
+      'ok',
+      `計測結果を自動収集しました (Cloudflare D1 · Run ID: ${shortId})`,
+      false,
+    );
+    loadCollectedResults();
+  } else {
+    setTelemetryBarState(
+      'error',
+      `自動送信に失敗しました (${res.error || 'ネットワークエラー'}) — ローカル表示中`,
+      true,
+    );
+  }
+  return res;
+}
+
+async function loadCollectedResults() {
+  if (!dom.collectedTbody) return;
+  dom.collectedTbody.innerHTML = '<tr><td colspan="7" class="table-placeholder">Cloudflare D1 から読み込み中...</td></tr>';
+
+  const data = await fetchRecentResults(20);
+  if (!data.ok) {
+    dom.collectedTotalBadge.textContent = '取得失敗';
+    dom.collectedTbody.innerHTML = `<tr><td colspan="7" class="table-placeholder">収集ログの取得に失敗しました (${escapeHtml(data.error)})</td></tr>`;
+    return;
+  }
+
+  dom.collectedTotalBadge.textContent = `${(data.totalRuns || 0).toLocaleString()} 件`;
+
+  if (!data.runs || data.runs.length === 0) {
+    dom.collectedTbody.innerHTML = '<tr><td colspan="7" class="table-placeholder">まだ収集データがありません。「自動ベンチマーク」を実行すると自動で記録されます。</td></tr>';
+    return;
+  }
+
+  dom.collectedTbody.innerHTML = '';
+  for (const run of data.runs) {
+    const dev = formatRunDeviceLabel(run);
+    const dtStr = formatLocalTimestamp(run.createdAt);
+    const fsBadge = run.fullscreen ? 'FS' : 'Win';
+    const orient = run.orientationType?.includes('landscape') ? '横' : (run.viewportWidth >= run.viewportHeight ? '横' : '縦');
+    const resStr = run.viewportWidth && run.viewportHeight
+      ? `${run.viewportWidth}×${run.viewportHeight} (${orient}/${fsBadge})`
+      : '--';
+
+    const scenarios = Array.isArray(run.results) && run.results.length > 0 ? run.results : [null];
+    scenarios.forEach((sc, idx) => {
+      const tr = document.createElement('tr');
+      const scLabel = sc ? `${SCENARIOS[sc.scenario]?.label || sc.scenario} (${(sc.count || 0).toLocaleString()})` : '--';
+      const cFps = sc?.custom ? `${Number(sc.custom.fps || 0).toFixed(1)} / ${Number(sc.custom.avgCpuMs || 0).toFixed(2)}ms` : '--';
+      const tFps = sc?.three ? `${Number(sc.three.fps || 0).toFixed(1)} / ${Number(sc.three.avgCpuMs || 0).toFixed(2)}ms` : '--';
+      const spd = sc?.cpuSpeedup ? `${Number(sc.cpuSpeedup).toFixed(2)}x` : '--';
+
+      tr.innerHTML = `
+        <td>${idx === 0 ? escapeHtml(dtStr) : ''}</td>
+        <td>${idx === 0 ? `<div class="device-col-main" title="${escapeHtml(run.userAgent)}">${escapeHtml(dev.gpu)}</div><div class="device-col-sub">${escapeHtml(dev.os)}${run.cpuCores ? ` · ${run.cpuCores}コア` : ''}${run.country ? ` · ${escapeHtml(run.country)}` : ''}</div>` : ''}</td>
+        <td>${idx === 0 ? escapeHtml(resStr) : ''}</td>
+        <td>${escapeHtml(scLabel)}</td>
+        <td class="cell-custom">${escapeHtml(cFps)}</td>
+        <td class="cell-three">${escapeHtml(tFps)}</td>
+        <td><strong>${escapeHtml(spd)}</strong></td>
+      `;
+      dom.collectedTbody.appendChild(tr);
+    });
+  }
+}
+
+function formatLocalTimestamp(iso) {
+  if (!iso) return '--';
+  try {
+    const d = new Date(iso);
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    const h = String(d.getHours()).padStart(2, '0');
+    const min = String(d.getMinutes()).padStart(2, '0');
+    return `${m}/${day} ${h}:${min}`;
+  } catch {
+    return iso.slice(0, 16);
+  }
+}
+
+async function runAutomatedBenchmark(runAllScenarios = false, durationPerEngineMs = 2400, options = {}) {
+  if (state.benchmarkRunning) return [];
   state.benchmarkRunning = true;
   state.benchmarkCancelled = false;
+
+  const useFullscreen = options.fullscreen !== false;
+  const autoUpload = options.autoUpload !== false;
+
+  // Trigger fullscreen request synchronously before any await to preserve user gesture!
+  const fsPromise = useFullscreen ? requestLandscapeFullscreenSync() : null;
 
   const prevView = state.viewMode;
   const prevScenario = state.scenario;
@@ -340,6 +557,9 @@ async function runAutomatedBenchmark(runAllScenarios = false, durationPerEngineM
 
   dom.reportModal.classList.add('hidden');
   dom.benchBanner.classList.remove('hidden');
+  dom.benchStatusTitle.textContent = '横画面フルスクリーンへ切替中...';
+  dom.benchStatusDetail.textContent = '計測解像度を固定し、公平な単独ベンチマークを準備しています。';
+  dom.benchProgressFill.style.width = '2%';
 
   const plan = runAllScenarios
     ? [
@@ -352,15 +572,29 @@ async function runAutomatedBenchmark(runAllScenarios = false, durationPerEngineM
   const totalSteps = plan.length * 2;
   let step = 0;
   const results = [];
+  let deviceInfo = null;
+  let fsState = { enteredNative: false, orientationLocked: false, cssLandscapeFallback: false };
 
   try {
+    if (useFullscreen) {
+      fsState = await enterBenchmarkLandscapeFullscreen(fsPromise);
+    }
+
+    // Collect rich device, User-Agent, GPU, and actual fullscreen landscape viewport info
+    deviceInfo = await collectDeviceInfo({
+      customEngine: state.customEngine,
+      threeEngine: state.threeEngine,
+      fullscreenState: fsState,
+    });
+    state.lastDeviceInfo = deviceInfo;
+
     for (const item of plan) {
       if (state.benchmarkCancelled) break;
       const sc = SCENARIOS[item.scenario];
 
       // 1. Measure Custom Engine Solo
       dom.benchStatusTitle.textContent = `計測中 (${step + 1}/${totalSteps}): 自作エンジン — ${sc.label}`;
-      dom.benchStatusDetail.textContent = `${item.count.toLocaleString()} ${sc.entityUnit} · 単独フルスクリーン計測中...`;
+      dom.benchStatusDetail.textContent = `${item.count.toLocaleString()} ${sc.entityUnit} · 横画面フルスクリーン単独計測中 (${deviceInfo.viewport.width}×${deviceInfo.viewport.height})...`;
       dom.benchProgressFill.style.width = `${Math.round((step / totalSteps) * 100)}%`;
       const customStats = await measureEngineSolo('custom', item.scenario, item.count, durationPerEngineMs);
       step++;
@@ -368,7 +602,7 @@ async function runAutomatedBenchmark(runAllScenarios = false, durationPerEngineM
 
       // 2. Measure Three.js Solo
       dom.benchStatusTitle.textContent = `計測中 (${step + 1}/${totalSteps}): Three.js — ${sc.label}`;
-      dom.benchStatusDetail.textContent = `${item.count.toLocaleString()} ${sc.entityUnit} · 単独フルスクリーン計測中...`;
+      dom.benchStatusDetail.textContent = `${item.count.toLocaleString()} ${sc.entityUnit} · 横画面フルスクリーン単独計測中 (${deviceInfo.viewport.width}×${deviceInfo.viewport.height})...`;
       dom.benchProgressFill.style.width = `${Math.round((step / totalSteps) * 100)}%`;
       const threeStats = await measureEngineSolo('three', item.scenario, item.count, durationPerEngineMs);
       step++;
@@ -386,6 +620,9 @@ async function runAutomatedBenchmark(runAllScenarios = false, durationPerEngineM
     dom.benchProgressFill.style.width = '100%';
   } finally {
     dom.benchBanner.classList.add('hidden');
+    if (useFullscreen) {
+      await exitBenchmarkLandscapeFullscreen();
+    }
     state.benchmarkRunning = false;
 
     // Restore user's view & scenario cleanly
@@ -402,6 +639,12 @@ async function runAutomatedBenchmark(runAllScenarios = false, durationPerEngineM
     }
     renderReportModal();
     dom.reportModal.classList.remove('hidden');
+
+    if (autoUpload && deviceInfo) {
+      uploadBenchmarkPayload({ device: deviceInfo, results });
+    } else {
+      loadCollectedResults();
+    }
   }
 
   return results;
@@ -411,7 +654,15 @@ function renderReportModal() {
   const list = state.benchmarkResults;
   const customStack = state.customEngine ? `${state.customEngine.backendLabel} + ${state.customEngine.wasmLabel}` : 'Custom';
   const threeStack = state.threeEngine ? state.threeEngine.backendLabel : 'Three.js';
-  dom.reportEnvInfo.textContent = `${customStack}  vs  ${threeStack}  |  解像度 ${window.innerWidth}×${window.innerHeight} (DPR ${Math.min(window.devicePixelRatio || 1, 2)})`;
+  const vpW = state.lastDeviceInfo?.viewport?.width || window.innerWidth;
+  const vpH = state.lastDeviceInfo?.viewport?.height || window.innerHeight;
+  const dpr = state.lastDeviceInfo?.viewport?.dpr || Math.min(window.devicePixelRatio || 1, 2);
+  const fsTag = state.lastDeviceInfo?.fullscreen?.active ? '横画面フルスクリーン' : 'ウィンドウ';
+  dom.reportEnvInfo.textContent = `${customStack}  vs  ${threeStack}  |  ${vpW}×${vpH} (DPR ${dpr} · ${fsTag})`;
+
+  if (state.lastDeviceInfo && dom.deviceJsonPreview) {
+    dom.deviceJsonPreview.textContent = JSON.stringify(state.lastDeviceInfo, null, 2);
+  }
 
   if (list.length === 0) {
     dom.reportEmpty.classList.remove('hidden');
@@ -578,6 +829,32 @@ function bindEvents() {
   dom.btnOpenReport.addEventListener('click', () => {
     renderReportModal();
     dom.reportModal.classList.remove('hidden');
+    loadCollectedResults();
+  });
+
+  dom.btnRefreshCollected.addEventListener('click', () => {
+    loadCollectedResults();
+  });
+
+  dom.btnRetryUpload.addEventListener('click', () => {
+    if (state.lastSubmittedPayload) {
+      uploadBenchmarkPayload(state.lastSubmittedPayload);
+    }
+  });
+
+  dom.btnCopyJson.addEventListener('click', async () => {
+    const payload = state.lastSubmittedPayload || {
+      device: state.lastDeviceInfo,
+      results: state.benchmarkResults,
+    };
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+      const orig = dom.btnCopyJson.textContent;
+      dom.btnCopyJson.textContent = 'コピー完了';
+      setTimeout(() => { dom.btnCopyJson.textContent = orig; }, 1600);
+    } catch {
+      dom.btnCopyJson.textContent = 'コピー不可';
+    }
   });
 
   dom.btnCloseReport.addEventListener('click', () => {
@@ -591,6 +868,8 @@ function bindEvents() {
   });
 
   window.addEventListener('resize', handleResize);
+  document.addEventListener('fullscreenchange', handleResize);
+  window.screen?.orientation?.addEventListener?.('change', handleResize);
 }
 
 // Expose deterministic programmatic hook for automated verification & reproducible benchmarking
@@ -600,6 +879,7 @@ window.__AETHER_BENCH__ = {
   reconfigureEngines,
   updateViewModeUI,
   initThreeEngine,
+  loadCollectedResults,
 };
 
 async function boot() {
