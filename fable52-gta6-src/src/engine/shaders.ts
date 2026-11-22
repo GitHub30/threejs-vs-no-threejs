@@ -133,6 +133,8 @@ ${isInst ? `
 
 export const PBR_FRAG = /* glsl */ `#version 300 es
 precision highp float;
+precision highp int;
+precision highp sampler2D;
 precision highp sampler2DArrayShadow;
 
 in vec3 vWorldPos;
@@ -537,10 +539,12 @@ ${isInst ? `
 }
 
 export const SHADOW_FRAG = /* glsl */ `#version 300 es
-precision mediump float;
+precision highp float;
+precision highp int;
+precision highp sampler2D;
 in vec2 vUv;
 uniform float uAlphaTest;
-uniform sampler2D uMap;
+uniform highp sampler2D uMap;
 void main() {
   if (uAlphaTest > 0.0) {
     if (texture(uMap, vUv).a < uAlphaTest) discard;
@@ -660,7 +664,8 @@ void main() {
 `;
 
 export const POINTS_FRAG = /* glsl */ `#version 300 es
-precision mediump float;
+precision highp float;
+precision highp int;
 in vec3 vC;
 in float vA;
 uniform int uToneMapInline;
@@ -686,7 +691,8 @@ void main() {
 `;
 
 export const LINES_FRAG = /* glsl */ `#version 300 es
-precision mediump float;
+precision highp float;
+precision highp int;
 uniform vec4 uColor;
 uniform int uToneMapInline;
 uniform float uExposure;
@@ -712,11 +718,18 @@ void main() {
 }
 `;
 
-/** Edge-preserving screen-space depth contact AO (texel-exact integer fetches, zero boundary-rounding bands or silhouette halos). */
+/**
+ * Derivative-free symmetric paired-sample screen-space contact AO:
+ * - Explicit highp sampler2D prevents GLSL ES 3.00 default lowp/fp16 depth truncation on mobile GPUs
+ * - Paired opposite samples (+dp, -dp) cancel linear surface slope identically on any flat wall/road/car without 1px normal derivatives
+ * - Quadratic depth deadzone guarantees zero contour stripes even on 16-bit mobile depth paths
+ */
 export const SSAO_FRAG = /* glsl */ `#version 300 es
 precision highp float;
+precision highp int;
+precision highp sampler2D;
 in vec2 vUv;
-uniform sampler2D uDepth;
+uniform highp sampler2D uDepth;
 uniform vec2 uFullTexel;   // 1.0 / full framebuffer size (consistent radius at any aoScale)
 uniform vec4 uProjParams;  // x = near, y = far, z = tanHalfFov * aspect, w = tanHalfFov
 uniform int uSamples;
@@ -729,61 +742,47 @@ float linDepthTexel(ivec2 p, ivec2 maxP) {
   return (2.0 * near * far) / max(far + near - z * (far - near), 1e-4);
 }
 
-vec3 viewPos(vec2 uv, float z) {
-  vec2 ndc = uv * 2.0 - 1.0;
-  return vec3(ndc.x * uProjParams.z * z, ndc.y * uProjParams.w * z, -z);
-}
-
 void main() {
   ivec2 dim = textureSize(uDepth, 0);
   ivec2 maxP = dim - ivec2(1);
-  // Snap to exact full-res depth texel center inside [1, dim - 2] so +-1 neighbors are always distinct (zero 1px border crease!)
   ivec2 p0 = clamp(ivec2(vUv * vec2(dim)), ivec2(1), max(maxP - ivec2(1), ivec2(1)));
-  vec2 uv0 = (vec2(p0) + 0.5) * uFullTexel;
   float z0 = linDepthTexel(p0, maxP);
   if (z0 > 240.0) { fragColor = vec4(1.0); return; }
-  vec3 P = viewPos(uv0, z0);
 
-  // Choose closer neighbor on each axis using guaranteed distinct +-1 texel offsets
-  ivec2 pR = min(p0 + ivec2(1, 0), maxP), pL = max(p0 - ivec2(1, 0), ivec2(0));
-  ivec2 pU = min(p0 + ivec2(0, 1), maxP), pD = max(p0 - ivec2(0, 1), ivec2(0));
-  float zR = linDepthTexel(pR, maxP), zL = linDepthTexel(pL, maxP);
-  float zU = linDepthTexel(pU, maxP), zD = linDepthTexel(pD, maxP);
-  vec3 dPx = (abs(zR - z0) < abs(z0 - zL))
-    ? (viewPos((vec2(pR) + 0.5) * uFullTexel, zR) - P)
-    : (P - viewPos((vec2(pL) + 0.5) * uFullTexel, zL));
-  vec3 dPy = (abs(zU - z0) < abs(z0 - zD))
-    ? (viewPos((vec2(pU) + 0.5) * uFullTexel, zU) - P)
-    : (P - viewPos((vec2(pD) + 0.5) * uFullTexel, zD));
-  vec3 N = normalize(cross(dPx, dPy));
+  float worldPerPx = max(z0 * uProjParams.w * 2.0 * uFullTexel.y, 1e-4);
+  // Deadzone rejects planar precision noise (even 16-bit depth) while preserving mid-range crevice AO
+  float bias = 0.018 + 0.0015 * z0 + 0.00015 * z0 * z0;
 
-  float angle = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) * 6.2831853;
-  float radiusPx = clamp(52.0 / max(z0, 1.5), 3.0, 28.0);
+  float angle = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) * 3.14159265;
+  float radiusPx = clamp(48.0 / max(z0, 1.5), 3.0, 24.0);
   float occ = 0.0;
-  int n = uSamples;
-  for (int i = 0; i < 8; i++) {
+  int n = max(uSamples / 2, 4);
+  for (int i = 0; i < 6; i++) {
     if (i >= n) break;
-    float a = angle + float(i) * (6.2831853 / float(n));
-    float r = radiusPx * (float(i) + 0.5) / float(n);
-    ivec2 sp = p0 + ivec2(round(vec2(cos(a), sin(a)) * r));
-    if (sp.x < 0 || sp.x > maxP.x || sp.y < 0 || sp.y > maxP.y || sp == p0) continue;
-    float zs = linDepthTexel(sp, maxP);
-    vec3 diff = viewPos((vec2(sp) + 0.5) * uFullTexel, zs) - P;
-    float len = length(diff);
-    if (len < 0.001) continue;
-    float nd = dot(N, diff / len);
-    float rangeFade = smoothstep(2.4, 0.25, len);
-    occ += max(0.0, nd - 0.14) * rangeFade;
+    float a = angle + float(i) * (3.14159265 / float(n));
+    float rad = radiusPx * (float(i) + 0.5) / float(n);
+    ivec2 dp = ivec2(round(vec2(cos(a), sin(a)) * rad));
+    if (dp.x == 0 && dp.y == 0) dp = ivec2(1, 0);
+    float zPos = linDepthTexel(p0 + dp, maxP);
+    float zNeg = linDepthTexel(p0 - dp, maxP);
+    float maxDiff = max(abs(zPos - z0), abs(zNeg - z0));
+    float rangeFade = smoothstep(2.2, 0.25, maxDiff);
+    float dz = z0 - 0.5 * (zPos + zNeg);
+    float armWorld = length(vec2(dp)) * worldPerPx;
+    float crease = clamp((dz - bias) / max(armWorld, 0.04), 0.0, 1.0);
+    occ += crease * rangeFade;
   }
-  float ao = clamp(1.0 - (occ / float(n)) * 1.4, 0.45, 1.0);
+  float ao = clamp(1.0 - (occ / float(n)) * 1.45, 0.48, 1.0);
   fragColor = vec4(ao, ao, ao, 1.0);
 }
 `;
 
 export const BLOOM_EXTRACT_FRAG = /* glsl */ `#version 300 es
 precision highp float;
+precision highp int;
+precision highp sampler2D;
 in vec2 vUv;
-uniform sampler2D uSrc;
+uniform highp sampler2D uSrc;
 uniform vec2 uTexel; // 1.0 / full framebuffer size
 out vec4 fragColor;
 void main() {
@@ -802,8 +801,10 @@ void main() {
 
 export const BLOOM_BLUR_FRAG = /* glsl */ `#version 300 es
 precision highp float;
+precision highp int;
+precision highp sampler2D;
 in vec2 vUv;
-uniform sampler2D uSrc;
+uniform highp sampler2D uSrc;
 uniform vec2 uDir;
 out vec4 fragColor;
 void main() {
@@ -818,10 +819,12 @@ void main() {
 
 export const COMPOSITE_FRAG = /* glsl */ `#version 300 es
 precision highp float;
+precision highp int;
+precision highp sampler2D;
 in vec2 vUv;
-uniform sampler2D uScene;
-uniform sampler2D uBloom;
-uniform sampler2D uAo;
+uniform highp sampler2D uScene;
+uniform highp sampler2D uBloom;
+uniform highp sampler2D uAo;
 uniform vec2 uAoTexel;
 uniform float uBloomStrength;
 uniform float uAoEnabled;
