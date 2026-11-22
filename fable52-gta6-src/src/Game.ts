@@ -68,7 +68,7 @@ const PROPS: Record<Exclude<Weapon, 'fist'>, THREE.BufferGeometry> = {
 };
 
 export class Game {
-  readonly renderer: THREE.WebGLRenderer;
+  readonly renderer: THREE.EngineRenderer;
   readonly scene = new THREE.Scene();
   readonly camera = new THREE.PerspectiveCamera(62, 1, 0.3, 3000);
   readonly rig = new CameraRig(this.camera);
@@ -125,10 +125,10 @@ export class Game {
   /** Prompt requested for this frame as [key, text]; applied once at the end of the frame. */
   prompt: [string, string] | null = null;
 
-  constructor(readonly canvas: HTMLCanvasElement, uiRoot: HTMLElement, data: WorldData) {
+  constructor(readonly canvas: HTMLCanvasElement, uiRoot: HTMLElement, data: WorldData, renderer?: THREE.EngineRenderer) {
     this.city = new City(data);
     this.spawnPoint = this.city.sideSpot(PLACES.tsutenkaku.x + 35, PLACES.tsutenkaku.z + 60);
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+    this.renderer = renderer ?? new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -138,6 +138,7 @@ export class Game {
     this.env = new Environment(this.scene);
     this.effects = new Effects(this.scene);
     this.hud = new Hud(uiRoot, this.city);
+    this.hud.backend = this.renderer.backend;
     this.touch = new TouchControls(uiRoot, this.input, {
       weapon: () => (this.weapon = WEAPON_KEYS[(WEAPON_KEYS.indexOf(this.weapon) + 1) % WEAPON_KEYS.length]),
     });

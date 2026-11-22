@@ -146,7 +146,7 @@ export class Hud {
     }
     if (L.weapon !== s.weapon) this.weapon.textContent = s.weapon;
     if (L.aim !== s.aim) this.cross.classList.toggle('hidden', !s.aim);
-    if (L.fps !== s.fps) this.fps.textContent = s.fps + ' FPS';
+    if (L.fps !== s.fps) this.fps.textContent = `${s.fps} FPS · ${this.backend === 'webgpu' ? 'WebGPU' : 'WebGL2'}`;
     this.last = { ...s };
   }
 
@@ -182,6 +182,8 @@ export class Hud {
       '<div class="credits">地図データ © OpenStreetMap contributors ／ 航空写真・標高: 国土地理院（地理院タイル）</div>'
     );
   }
+  /** Set by the game: active GPU backend ('webgpu' | 'webgl2'). */
+  backend: 'webgpu' | 'webgl2' = 'webgl2';
   /** Set by the game: current graphics quality and how to change it. */
   graphics: { level: () => GraphicsLevel; set: (l: GraphicsLevel) => void } | null = null;
   private graphicsRow() {
@@ -198,7 +200,33 @@ export class Hud {
     });
     const paint = () => buttons.forEach((b, i) => b.classList.toggle('on', GRAPHICS_LEVELS[i] === this.graphics?.level()));
     paint();
-    wrap.append(row, el('div', 'gfx-note', 'ローポリ: 軽量 ／ 高精細: 滑らかなモデル・反射・ブルーム（標準） ／ 最高: さらに高解像度。30fps を下回ると解像度を自動で下げます。'));
+
+    const apiRow = el('div', 'gfx', '<span>描画エンジン</span>');
+    for (const [id, label] of [['webgpu', 'WebGPU (優先)'], ['webgl2', 'WebGL2']] as const) {
+      const b = el('button', this.backend === id ? 'on' : '', label) as HTMLButtonElement;
+      b.onclick = () => {
+        if (this.backend === id) return;
+        const u = new URL(location.href);
+        if (id === 'webgpu') {
+          if (u.searchParams.get('backend')?.toLowerCase() === 'webgl2') {
+            u.searchParams.delete('backend');
+            location.href = u.toString();
+          } else {
+            this.notify('この環境はハードウェア WebGPU 非対応のため WebGL2 で動作しています', 'warn');
+          }
+        } else {
+          u.searchParams.set('backend', 'webgl2');
+          location.href = u.toString();
+        }
+      };
+      apiRow.append(b);
+    }
+
+    wrap.append(
+      row,
+      apiRow,
+      el('div', 'gfx-note', 'ローポリ: 軽量 ／ 高精細: 滑らかなモデル・反射・ブルーム（標準） ／ 最高: さらに高解像度。WebGPU 非対応環境は自動で WebGL2 へ切替。'),
+    );
     return wrap;
   }
   private button(label: string, alt: boolean, fn: () => void) {

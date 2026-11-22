@@ -34,7 +34,7 @@ export class Graphics {
   private h = 1;
 
   constructor(
-    private renderer: THREE.WebGLRenderer,
+    private renderer: THREE.EngineRenderer,
     private scene: THREE.Scene,
     private camera: THREE.PerspectiveCamera,
     private env: Environment,

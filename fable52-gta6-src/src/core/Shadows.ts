@@ -7,7 +7,7 @@ import * as THREE from '../engine';
  */
 export class SunShadows {
   constructor(
-    private renderer: THREE.WebGLRenderer,
+    private renderer: THREE.EngineRenderer,
     splits: number[],
     mapSize: number,
   ) {

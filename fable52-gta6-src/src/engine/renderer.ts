@@ -1,4 +1,5 @@
 import { BufferAttribute, BufferGeometry } from './geometry';
+import type { EngineRenderer, PostConfig, RendererOptions, ShadowConfig } from './gpuTypes';
 import {
   Material,
   ShaderMaterial,
@@ -138,25 +139,6 @@ interface DrawItem {
   sr: number;
 }
 
-export interface PostConfig {
-  enabled: boolean;
-  aoScale: number;        // 0 = off, 0.5 = half-res, 0.75..1 = high-res
-  bloomStrength: number;
-  reflections: boolean;
-}
-
-export interface ShadowConfig {
-  enabled: boolean;
-  mapSize: number;
-  cascades: number[] | null;
-}
-
-export interface RendererOptions {
-  canvas: HTMLCanvasElement;
-  antialias?: boolean;
-  powerPreference?: WebGLPowerPreference;
-}
-
 // Module-level zero-allocation scratch buffers & hoisted comparators
 const _vp = new Float32Array(16);
 const _camPlanes = new Float32Array(24);
@@ -201,7 +183,8 @@ function glTypeForArray(gl: WebGL2RenderingContext, arr: ArrayBufferView): numbe
   return gl.FLOAT;
 }
 
-export class WebGLRenderer {
+export class WebGLRenderer implements EngineRenderer {
+  readonly backend = 'webgl2' as const;
   readonly domElement: HTMLCanvasElement;
   readonly gl: WebGL2RenderingContext;
   readonly capabilities: { maxTextureSize: number; maxAnisotropy: number; maxSamples: number };
