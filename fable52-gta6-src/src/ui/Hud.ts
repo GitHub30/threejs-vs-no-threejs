@@ -1,3 +1,4 @@
+import { IS_IOS, LOW_MEM_DEVICE } from '../engine';
 import { City } from '../world/City';
 import { GRAPHICS_LEVELS, GRAPHICS_LABEL, GraphicsLevel } from '../core/Graphics';
 
@@ -92,7 +93,7 @@ export class Hud {
     root.append(this.fade, this.hudRoot, this.overlay);
     this.stars.innerHTML = '<span>★</span>'.repeat(5);
     // minimap base: the aerial photo with the road network drawn over it
-    const d = city.data, mw = 1024, mh = Math.round((1024 * d.hz) / d.hx), k = mw / (2 * d.hx);
+    const d = city.data, mw = LOW_MEM_DEVICE ? 512 : 1024, mh = Math.round((mw * d.hz) / d.hx), k = mw / (2 * d.hx);
     this.mapImg.width = mw;
     this.mapImg.height = mh;
     const mc = this.mapImg.getContext('2d')!;
@@ -202,13 +203,21 @@ export class Hud {
     paint();
 
     const apiRow = el('div', 'gfx', '<span>描画エンジン</span>');
-    for (const [id, label] of [['webgpu', 'WebGPU (優先)'], ['webgl2', 'WebGL2']] as const) {
+    const hasWebGpu = typeof navigator !== 'undefined' && 'gpu' in navigator;
+    for (const [id, label] of [['webgpu', IS_IOS ? 'WebGPU (試験)' : 'WebGPU (優先)'], ['webgl2', 'WebGL2']] as const) {
       const b = el('button', this.backend === id ? 'on' : '', label) as HTMLButtonElement;
       b.onclick = () => {
         if (this.backend === id) return;
         const u = new URL(location.href);
         if (id === 'webgpu') {
-          if (u.searchParams.get('backend')?.toLowerCase() === 'webgl2') {
+          if (!hasWebGpu) {
+            this.notify('この環境は WebGPU 非対応のため WebGL2 で動作しています', 'warn');
+            return;
+          }
+          if (IS_IOS) {
+            u.searchParams.set('backend', 'webgpu');
+            location.href = u.toString();
+          } else if (u.searchParams.get('backend')?.toLowerCase() === 'webgl2') {
             u.searchParams.delete('backend');
             location.href = u.toString();
           } else {

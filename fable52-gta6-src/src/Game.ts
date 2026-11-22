@@ -401,7 +401,9 @@ export class Game {
     this.last = performance.now();
     const loop = (now: number) => {
       requestAnimationFrame(loop);
-      const real = (now - this.last) / 1000;
+      // rAF timestamps are frame-begin times and can predate the performance.now() taken after a long
+      // synchronous init (slow phones), giving a negative dt that makes exponential damping diverge.
+      const real = Math.max(0, (now - this.last) / 1000);
       this.last = now;
       this.frame(Math.min(0.05, real));
       this.measure(real);

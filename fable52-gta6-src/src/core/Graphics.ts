@@ -46,7 +46,9 @@ export class Graphics {
     } catch {
       /* storage unavailable */
     }
-    this.level = GRAPHICS_LEVELS.includes(saved as GraphicsLevel) ? (saved as GraphicsLevel) : 'high';
+    this.level = GRAPHICS_LEVELS.includes(saved as GraphicsLevel)
+      ? (saved as GraphicsLevel)
+      : (THREE.IS_IOS ? 'low' : 'high');
     this.apply(this.level, false);
   }
 
@@ -54,7 +56,8 @@ export class Graphics {
     return PRESETS[this.level];
   }
   get pixelRatio() {
-    return Math.min(window.devicePixelRatio, this.preset.pixelRatio) * SCALE_STEPS[this.step];
+    const cap = THREE.LOW_MEM_DEVICE ? Math.min(this.preset.pixelRatio, 1.25) : this.preset.pixelRatio;
+    return Math.min(window.devicePixelRatio, cap) * SCALE_STEPS[this.step];
   }
 
   apply(level: GraphicsLevel, persist = true) {
@@ -70,18 +73,20 @@ export class Graphics {
     setModelDetail(p.detail);
     this.city.setDetail(p.detail);
 
-    // Configure native WebGL2 TEXTURE_2D_ARRAY CSM shadows (zero shader patching, zero scene traversal)
-    this.env.sun.shadow.mapSize.set(p.shadow, p.shadow);
+    // Cap shadow atlas size and cascade count on low-memory mobile/iOS devices to stay safely under Jetsam limits
+    const shadowSize = THREE.LOW_MEM_DEVICE ? Math.min(p.shadow, 1024) : p.shadow;
+    const cascades = p.cascades && THREE.LOW_MEM_DEVICE ? [24, 90] : p.cascades;
+    this.env.sun.shadow.mapSize.set(shadowSize, shadowSize);
     this.renderer.shadowConfig = {
       enabled: true,
-      mapSize: p.shadow,
-      cascades: p.cascades,
+      mapSize: shadowSize,
+      cascades,
     };
 
     // Configure native HDR post-FX + analytical sky IBL (zero PMREM cubemap stalls)
     this.renderer.postConfig = {
       enabled: p.post,
-      aoScale: p.post ? p.ao : 0,
+      aoScale: p.post ? (THREE.LOW_MEM_DEVICE ? Math.min(p.ao, 0.4) : p.ao) : 0,
       bloomStrength: 0.32,
       reflections: p.reflections,
     };

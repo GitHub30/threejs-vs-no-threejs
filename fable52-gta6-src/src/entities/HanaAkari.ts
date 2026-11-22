@@ -16,7 +16,7 @@ const HALF = CAR_LEN / 2, HW = 1.45;
 const SILL = 0.95, EAVE = 3.15, CROWN = 3.74; // heights above the rail
 const WALL = EAVE - SILL, CURVE = (Math.PI / 2) * 0.45, ROOF = 1.02;
 const GIRTH = WALL + CURVE + ROOF; // half the unrolled cross-section
-const PPM = 96;
+const PPM = THREE.LOW_MEM_DEVICE ? 36 : 96;
 const GOLD = '#e6b312', BODY = '#231a15';
 const SANS = 'Arial, "Helvetica Neue", Helvetica, sans-serif';
 const BRUSH = '"Yu Mincho","YuMincho","Hiragino Mincho ProN","HGS行書体","MS PMincho",serif';

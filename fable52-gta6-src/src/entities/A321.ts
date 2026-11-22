@@ -345,8 +345,8 @@ function fuselageUV(side: number, z: number, deg: number): [number, number] {
   return [(side > 0 ? NOSE - z : z - TAIL) / LEN, 1 - y];
 }
 
-function finTexture() {
-  const W = 4096, H = 1638, hw = W / 2;
+function finTexture(maxW: number) {
+  const W = Math.min(4096, maxW), H = Math.round(W * 0.4), hw = W / 2;
   const canvas = document.createElement('canvas');
   canvas.width = W;
   canvas.height = H;
@@ -548,16 +548,17 @@ export class A321Model {
 
   /** `maxTexture` is the GPU's texture size limit; the fuselage paint uses up to 8192 px along the length. */
   constructor(maxTexture: number) {
-    const big = Math.min(8192, maxTexture);
+    const big = Math.min(THREE.LOW_MEM_DEVICE ? 1024 : 8192, maxTexture);
+    const emW = THREE.LOW_MEM_DEVICE ? 512 : 2048;
     const gloss = { roughness: 0.36, metalness: 0.1, clearcoat: 0.7, clearcoatRoughness: 0.12 };
     this.skin = new THREE.MeshPhysicalMaterial({
       ...gloss,
       map: fuselageTexture(big, big / 4, false),
-      emissiveMap: fuselageTexture(2048, 512, true),
+      emissiveMap: fuselageTexture(emW, emW / 4, true),
       emissive: 0xffffff,
       emissiveIntensity: 0,
     });
-    const finMat = new THREE.MeshPhysicalMaterial({ ...gloss, map: finTexture() });
+    const finMat = new THREE.MeshPhysicalMaterial({ ...gloss, map: finTexture(big) });
     const paintMat = new THREE.MeshPhysicalMaterial({ ...gloss, vertexColors: true });
     const metalMat = new THREE.MeshPhysicalMaterial({ vertexColors: true, roughness: 0.22, metalness: 1, clearcoat: 0.3 });
     const darkMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0.05 });

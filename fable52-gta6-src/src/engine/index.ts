@@ -4,6 +4,7 @@ export * from './geometry';
 export * from './materials';
 export * from './scene';
 export * from './gpuTypes';
+export * from './device';
 export * from './renderer';
 export * from './wgpuRenderer';
 export * from './createRenderer';

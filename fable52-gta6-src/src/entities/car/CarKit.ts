@@ -715,7 +715,7 @@ export interface CarAssets {
   sphere: THREE.Sphere;
 }
 
-const TEX_MAX = [1024, 2048, 3072];
+const TEX_MAX = THREE.LOW_MEM_DEVICE ? [512, 1024, 1024] : [1024, 2048, 3072];
 /** Tinted glass, shared by every car: per-vertex colour and opacity. */
 export const glassMaterial = new THREE.MeshPhysicalMaterial({
   vertexColors: true, transparent: true, depthWrite: false, side: THREE.DoubleSide, roughness: 0.04, metalness: 0, envMapIntensity: 2.2,

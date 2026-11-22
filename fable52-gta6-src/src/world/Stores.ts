@@ -602,7 +602,8 @@ export class Stores {
     for (const b of batches.values()) {
       const spec = SPECS[b.kind];
       const canvas = document.createElement('canvas'), mask = document.createElement('canvas');
-      const ppm = spec.ppm ?? PPM;
+      const rawPpm = spec.ppm ?? PPM;
+      const ppm = THREE.LOW_MEM_DEVICE ? Math.max(36, Math.round(rawPpm * 0.35)) : rawPpm;
       canvas.width = mask.width = Math.round((b.width + STRIP) * ppm);
       canvas.height = mask.height = Math.round(spec.height * ppm);
       spec.paint(new Painter(canvas, mask, spec.height, seed++, ppm), b.width);

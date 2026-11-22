@@ -153,10 +153,12 @@ export function policeOverlay(a: PersonAsset): THREE.Texture {
   const hit = overlays.get(a.name);
   if (hit) return hit;
   const img = a.map.image as { width: number; height: number };
+  const scale = THREE.LOW_MEM_DEVICE ? 0.5 : 1;
   const cv = document.createElement('canvas');
-  cv.width = img.width;
-  cv.height = img.height;
+  cv.width = Math.max(1, Math.round(img.width * scale));
+  cv.height = Math.max(1, Math.round(img.height * scale));
   const g = cv.getContext('2d')!;
+  if (scale !== 1) g.scale(scale, scale);
   const P = a.paint, k = P.pxPerM;
   const [tx, ty, tw, th] = P.charts.trunk;
   const yAt = (chart: number[], world: number) => chart[1] + (chart[4] - world) * k;
@@ -224,6 +226,8 @@ export function policeOverlay(a: PersonAsset): THREE.Texture {
       if (u < 0 || u >= 1) continue;
       g.drawImage(L.s, u * L.s.width, 0, 1, L.s.height, tx + i, y, 1.5, h);
     }
+    L.s.width = 0;
+    L.s.height = 0;
   };
   wrap(label(0.23), true, 0, P.shoulder - 0.075);
   // the breast patch sits on the wearer's left, which is the reader's right

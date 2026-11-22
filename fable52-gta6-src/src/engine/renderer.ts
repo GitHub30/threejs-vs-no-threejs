@@ -1,3 +1,4 @@
+import { MAX_TEX_DIM } from './device';
 import { BufferAttribute, BufferGeometry } from './geometry';
 import type { EngineRenderer, PostConfig, RendererOptions, ShadowConfig } from './gpuTypes';
 import {
@@ -303,6 +304,8 @@ export class WebGLRenderer implements EngineRenderer {
   private curPolyUnits = NaN;
   private curAlphaToCov: boolean | null = null;
   private curTex = new Array<WebGLTexture | null>(10).fill(null);
+  private contextLost = false;
+  private scratchCanvas: HTMLCanvasElement | null = null;
 
   constructor(opts: RendererOptions) {
     this.domElement = opts.canvas;
@@ -317,6 +320,14 @@ export class WebGLRenderer implements EngineRenderer {
     if (!gl) throw new Error('WebGL2 is required');
     this.gl = gl;
 
+    opts.canvas.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      this.contextLost = true;
+    });
+    opts.canvas.addEventListener('webglcontextrestored', () => {
+      this.contextLost = false;
+    });
+
     this.anisoExt = gl.getExtension('EXT_texture_filter_anisotropic');
     const cbf = gl.getExtension('EXT_color_buffer_float');
     const cbhf = gl.getExtension('EXT_color_buffer_half_float');
@@ -324,7 +335,7 @@ export class WebGLRenderer implements EngineRenderer {
     gl.getExtension('OES_texture_float_linear');
 
     this.capabilities = {
-      maxTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE) as number,
+      maxTextureSize: Math.min(MAX_TEX_DIM, gl.getParameter(gl.MAX_TEXTURE_SIZE) as number),
       maxAnisotropy: this.anisoExt ? (gl.getParameter(this.anisoExt.MAX_TEXTURE_MAX_ANISOTROPY_EXT) as number) : 1,
       maxSamples: (gl.getParameter(gl.MAX_SAMPLES) as number) || 0,
     };
@@ -634,11 +645,27 @@ export class WebGLRenderer implements EngineRenderer {
         rec.version = tex.version;
       } else if (tex.image) {
         const img = tex.image;
-        const w = (img as { width: number }).width;
-        const h = (img as { height: number }).height;
-        if (w > 0 && h > 0) {
+        const rawW = (img as { naturalWidth?: number; width: number }).naturalWidth || (img as { width: number }).width;
+        const rawH = (img as { naturalHeight?: number; height: number }).naturalHeight || (img as { height: number }).height;
+        if (rawW > 0 && rawH > 0) {
+          const maxDim = this.capabilities.maxTextureSize;
+          let uploadSrc = img as TexImageSource;
+          let usedScratch = false;
+          if (rawW > maxDim || rawH > maxDim) {
+            const sc = maxDim / Math.max(rawW, rawH);
+            const nw = Math.max(1, Math.round(rawW * sc));
+            const nh = Math.max(1, Math.round(rawH * sc));
+            if (!this.scratchCanvas) this.scratchCanvas = document.createElement('canvas');
+            const c = this.scratchCanvas;
+            c.width = nw;
+            c.height = nh;
+            const ctx = c.getContext('2d')!;
+            ctx.drawImage(img as CanvasImageSource, 0, 0, nw, nh);
+            uploadSrc = c;
+            usedScratch = true;
+          }
           gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, tex.flipY ? 1 : 0);
-          gl.texImage2D(gl.TEXTURE_2D, 0, internalFmt, gl.RGBA, gl.UNSIGNED_BYTE, img as TexImageSource);
+          gl.texImage2D(gl.TEXTURE_2D, 0, internalFmt, gl.RGBA, gl.UNSIGNED_BYTE, uploadSrc);
           gl.generateMipmap(gl.TEXTURE_2D);
           gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
           gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -646,6 +673,15 @@ export class WebGLRenderer implements EngineRenderer {
             gl.texParameterf(gl.TEXTURE_2D, this.anisoExt.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(tex.anisotropy, this.capabilities.maxAnisotropy));
           }
           rec.version = tex.version;
+          if (usedScratch && this.scratchCanvas) {
+            this.scratchCanvas.width = 0;
+            this.scratchCanvas.height = 0;
+          }
+          // Release Canvas2D IOSurface backing store immediately after GPU upload (huge iOS Safari RAM win!)
+          if (tex.isCanvasTexture && img instanceof HTMLCanvasElement) {
+            img.width = 0;
+            img.height = 0;
+          }
         } else {
           return fallback;
         }
@@ -1340,6 +1376,7 @@ export class WebGLRenderer implements EngineRenderer {
   // =========================================================================
 
   render(scene: Scene, camera: Camera): void {
+    if (this.contextLost) return;
     const gl = this.gl;
     this.info.render.calls = 0;
     this.info.render.triangles = 0;

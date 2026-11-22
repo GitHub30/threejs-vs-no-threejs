@@ -7,6 +7,7 @@
 //  - Zero-resolve multisampled Compute SSAO + Compute Bloom + AP1 ACES Composite
 //  - Gamma-aware GPU mipmap chain generation + anisotropic road/terrain filtering
 
+import { LOW_MEM_DEVICE, MAX_TEX_DIM } from './device';
 import { BufferAttribute, BufferGeometry } from './geometry';
 import {
   EngineRenderer,
@@ -509,7 +510,7 @@ export class WebGPURenderer implements EngineRenderer {
     this.bloomBlurUniformCpu = new Float32Array((2 * this.uAlign) / 4);
 
     this.capabilities = {
-      maxTextureSize: Math.min(8192, device.limits.maxTextureDimension2D || 4096),
+      maxTextureSize: Math.min(MAX_TEX_DIM, device.limits.maxTextureDimension2D || 4096),
       maxAnisotropy: 8,
       maxSamples: 4,
     };
@@ -594,7 +595,7 @@ export class WebGPURenderer implements EngineRenderer {
       device: this.device,
       format: this.canvasFormat,
       alphaMode: 'opaque',
-      usage: GPU_TEXTURE_USAGE.RENDER_ATTACHMENT | GPU_TEXTURE_USAGE.COPY_SRC,
+      usage: GPU_TEXTURE_USAGE.RENDER_ATTACHMENT,
     });
   }
 
@@ -882,31 +883,38 @@ export class WebGPURenderer implements EngineRenderer {
     this.bloomBlurUniformBuf = dev.createBuffer({ size: 2 * this.uAlign, usage: GPU_BUFFER_USAGE.UNIFORM | GPU_BUFFER_USAGE.COPY_DST });
     this.compUniformBuf = dev.createBuffer({ size: 32, usage: GPU_BUFFER_USAGE.UNIFORM | GPU_BUFFER_USAGE.COPY_DST });
 
-    // Pre-warm core PBR + Shadow + Sky + Points + Lines pipeline variants asynchronously in parallel (zero frame-1 stutter!)
-    let savedLevel = 'high';
-    try { savedLevel = localStorage.getItem('velabay.graphics') || 'high'; } catch { /* ignore */ }
+    // Pre-warm core PBR + Shadow + Sky + Points + Lines pipeline variants asynchronously (zero frame-1 stutter!)
+    // On low-memory / iOS devices, compile in tiny batches (2 at a time) so Metal's shader compiler never spikes RAM.
+    let savedLevel = LOW_MEM_DEVICE ? 'low' : 'high';
+    try { savedLevel = localStorage.getItem('velabay.graphics') || savedLevel; } catch { /* ignore */ }
     const defaultHdr = savedLevel !== 'low';
     const s = this.msaaSamples;
-    const warmTasks: Promise<void>[] = [
-      this.getPbrPipelineAsync('static', 0, FrontSide, 0, true, 0, false, s, defaultHdr).then(() => {}),
-      this.getPbrPipelineAsync('static', 0, FrontSide, 0, true, 1, false, s, defaultHdr).then(() => {}),
-      this.getPbrPipelineAsync('static', 0, DoubleSide, 0, true, 0, false, s, defaultHdr).then(() => {}),
-      this.getPbrPipelineAsync('static', 0, DoubleSide, 0, true, 0, true, s, defaultHdr).then(() => {}),
-      this.getPbrPipelineAsync('static', 0, FrontSide, 1, false, 0, false, s, defaultHdr).then(() => {}),
-      this.getPbrPipelineAsync('static', 0, DoubleSide, 1, false, 0, false, s, defaultHdr).then(() => {}),
-      this.getPbrPipelineAsync('instanced', 1, FrontSide, 0, true, 0, false, s, defaultHdr).then(() => {}),
-      this.getPbrPipelineAsync('instanced', 1, DoubleSide, 0, true, 0, false, s, defaultHdr).then(() => {}),
-      this.getPbrPipelineAsync('skinned', 2, FrontSide, 0, true, 0, false, s, defaultHdr).then(() => {}),
-      this.getShadowPipelineAsync('static', 0, FrontSide).then(() => {}),
-      this.getShadowPipelineAsync('static', 0, DoubleSide).then(() => {}),
-      this.getShadowPipelineAsync('instanced', 1, FrontSide).then(() => {}),
-      this.getShadowPipelineAsync('skinned', 2, FrontSide).then(() => {}),
-      this.getSkyPipelineAsync(s, defaultHdr).then(() => {}),
-      this.getPointsPipelineAsync(1, s, defaultHdr).then(() => {}),
-      this.getPointsPipelineAsync(2, s, defaultHdr).then(() => {}),
-      this.getLinesPipelineAsync(1, s, defaultHdr).then(() => {}),
+    const warmFns: (() => Promise<unknown>)[] = [
+      () => this.getPbrPipelineAsync('static', 0, FrontSide, 0, true, 0, false, s, defaultHdr),
+      () => this.getPbrPipelineAsync('static', 0, FrontSide, 0, true, 1, false, s, defaultHdr),
+      () => this.getPbrPipelineAsync('static', 0, DoubleSide, 0, true, 0, false, s, defaultHdr),
+      () => this.getPbrPipelineAsync('static', 0, DoubleSide, 0, true, 0, true, s, defaultHdr),
+      () => this.getPbrPipelineAsync('static', 0, FrontSide, 1, false, 0, false, s, defaultHdr),
+      () => this.getPbrPipelineAsync('static', 0, DoubleSide, 1, false, 0, false, s, defaultHdr),
+      () => this.getPbrPipelineAsync('instanced', 1, FrontSide, 0, true, 0, false, s, defaultHdr),
+      () => this.getPbrPipelineAsync('instanced', 1, DoubleSide, 0, true, 0, false, s, defaultHdr),
+      () => this.getPbrPipelineAsync('skinned', 2, FrontSide, 0, true, 0, false, s, defaultHdr),
+      () => this.getShadowPipelineAsync('static', 0, FrontSide),
+      () => this.getShadowPipelineAsync('static', 0, DoubleSide),
+      () => this.getShadowPipelineAsync('instanced', 1, FrontSide),
+      () => this.getShadowPipelineAsync('skinned', 2, FrontSide),
+      () => this.getSkyPipelineAsync(s, defaultHdr),
+      () => this.getPointsPipelineAsync(1, s, defaultHdr),
+      () => this.getPointsPipelineAsync(2, s, defaultHdr),
+      () => this.getLinesPipelineAsync(1, s, defaultHdr),
     ];
-    await Promise.all(warmTasks);
+    if (LOW_MEM_DEVICE) {
+      for (let i = 0; i < warmFns.length; i += 2) {
+        await Promise.all(warmFns.slice(i, i + 2).map((fn) => fn()));
+      }
+    } else {
+      await Promise.all(warmFns.map((fn) => fn()));
+    }
   }
 
   private rebuildDrawBoneBg(): void {
@@ -1238,44 +1246,50 @@ export class WebGPURenderer implements EngineRenderer {
     gpuTex.destroy();
   }
 
-  private flushPendingMipmaps(enc: GPUCommandEncoderLike): void {
+  private flushPendingMipmaps(): void {
     if (this.pendingMips.length === 0) return;
     const dev = this.device;
-    for (let i = 0; i < this.pendingMips.length; i++) {
-      const { tex, mipCount, isSrgb } = this.pendingMips[i];
-      const pipe = isSrgb ? this.mipSrgbPipe : this.mipLinPipe;
-      const readFmt = isSrgb ? 'rgba8unorm-srgb' : 'rgba8unorm';
-      for (let lvl = 1; lvl < mipCount; lvl++) {
-        const srcView = tex.createView({ format: readFmt, baseMipLevel: lvl - 1, mipLevelCount: 1 });
-        const dstView = tex.createView({ format: 'rgba8unorm', baseMipLevel: lvl, mipLevelCount: 1 });
-        const bg = dev.createBindGroup({
-          layout: this.mipBgl,
-          entries: [
-            { binding: 0, resource: srcView },
-            { binding: 1, resource: this.sampClampLin },
-          ],
-        });
-        const pass = enc.beginRenderPass({
-          colorAttachments: [{ view: dstView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
-        });
-        pass.setPipeline(pipe);
-        pass.setBindGroup(0, bg);
-        pass.draw(3);
-        pass.end();
+    const BATCH = 12;
+    for (let base = 0; base < this.pendingMips.length; base += BATCH) {
+      const end = Math.min(base + BATCH, this.pendingMips.length);
+      const enc = dev.createCommandEncoder();
+      for (let i = base; i < end; i++) {
+        const { tex, mipCount, isSrgb } = this.pendingMips[i];
+        const pipe = isSrgb ? this.mipSrgbPipe : this.mipLinPipe;
+        const readFmt = isSrgb ? 'rgba8unorm-srgb' : 'rgba8unorm';
+        for (let lvl = 1; lvl < mipCount; lvl++) {
+          const srcView = tex.createView({ format: readFmt, baseMipLevel: lvl - 1, mipLevelCount: 1 });
+          const dstView = tex.createView({ format: 'rgba8unorm', baseMipLevel: lvl, mipLevelCount: 1 });
+          const bg = dev.createBindGroup({
+            layout: this.mipBgl,
+            entries: [
+              { binding: 0, resource: srcView },
+              { binding: 1, resource: this.sampClampLin },
+            ],
+          });
+          const pass = enc.beginRenderPass({
+            colorAttachments: [{ view: dstView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+          });
+          pass.setPipeline(pipe);
+          pass.setBindGroup(0, bg);
+          pass.draw(3);
+          pass.end();
+        }
       }
+      dev.queue.submit([enc.finish()]);
     }
     this.pendingMips.length = 0;
   }
 
-  private toCanvasSource(img: TexImageSource, w: number, h: number): HTMLCanvasElement {
-    if (img instanceof HTMLCanvasElement) return img;
+  private toCanvasSource(img: TexImageSource, w: number, h: number, forceResize: boolean): { canvas: HTMLCanvasElement; isScratch: boolean } {
+    if (!forceResize && img instanceof HTMLCanvasElement) return { canvas: img, isScratch: false };
     if (!this.scratchCanvas) this.scratchCanvas = document.createElement('canvas');
     const c = this.scratchCanvas;
     if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
     const ctx = c.getContext('2d')!;
     ctx.clearRect(0, 0, w, h);
     ctx.drawImage(img as CanvasImageSource, 0, 0, w, h);
-    return c;
+    return { canvas: c, isScratch: true };
   }
 
   private syncTexture(tex: Texture | null, fallback: GPUTextureViewLike): GPUTextureViewLike {
@@ -1320,9 +1334,14 @@ export class WebGPURenderer implements EngineRenderer {
       rec = { tex: gpuTex, view, version: tex.version, disposedVersion: tex._disposedVersion, isSrgb, wrapRepeat, aniso: tex.anisotropy };
     } else if (tex.image) {
       const img = tex.image as { width?: number; height?: number; naturalWidth?: number; naturalHeight?: number };
-      const w = img.naturalWidth || img.width || 0;
-      const h = img.naturalHeight || img.height || 0;
-      if (w <= 0 || h <= 0) return fallback;
+      const rawW = img.naturalWidth || img.width || 0;
+      const rawH = img.naturalHeight || img.height || 0;
+      if (rawW <= 0 || rawH <= 0) return fallback;
+      const maxDim = this.capabilities.maxTextureSize;
+      const needScale = rawW > maxDim || rawH > maxDim;
+      const sc = needScale ? maxDim / Math.max(rawW, rawH) : 1;
+      const w = needScale ? Math.max(1, Math.round(rawW * sc)) : rawW;
+      const h = needScale ? Math.max(1, Math.round(rawH * sc)) : rawH;
       if (rec) this.destroyTextureGpu(rec.tex);
       const mipCount = Math.floor(Math.log2(Math.max(w, h))) + 1;
       const gpuTex = dev.createTexture({
@@ -1332,12 +1351,21 @@ export class WebGPURenderer implements EngineRenderer {
         viewFormats: isSrgb ? ['rgba8unorm-srgb'] : [],
         usage: GPU_TEXTURE_USAGE.TEXTURE_BINDING | GPU_TEXTURE_USAGE.COPY_DST | GPU_TEXTURE_USAGE.RENDER_ATTACHMENT,
       });
-      const srcCanvas = this.toCanvasSource(tex.image as TexImageSource, w, h);
+      const { canvas: srcCanvas, isScratch } = this.toCanvasSource(tex.image as TexImageSource, w, h, needScale);
       dev.queue.copyExternalImageToTexture(
         { source: srcCanvas, flipY: tex.flipY },
         { texture: gpuTex, mipLevel: 0 },
         [w, h],
       );
+      if (isScratch && this.scratchCanvas) {
+        this.scratchCanvas.width = 0;
+        this.scratchCanvas.height = 0;
+      }
+      // Release Canvas2D IOSurface backing store immediately after GPU upload!
+      if (tex.isCanvasTexture && tex.image instanceof HTMLCanvasElement) {
+        tex.image.width = 0;
+        tex.image.height = 0;
+      }
       if (mipCount > 1) {
         this.pendingMips.push({ tex: gpuTex, mipCount, isSrgb });
       }
@@ -2447,9 +2475,9 @@ export class WebGPURenderer implements EngineRenderer {
     const activeLines = this.prepareLines(toneMapInline);
     const activePoints = this.preparePoints(camera, toneMapInline);
 
-    // 3. Begin single frame GPUCommandEncoder
+    // 3. Flush any pending GPU mipmap batches in small Metal-safe command buffers, then begin frame encoder
+    this.flushPendingMipmaps();
     const enc = dev.createCommandEncoder();
-    this.flushPendingMipmaps(enc);
 
     // 3a. GPU Compute Frustum Culling Pass for ALL InstancedMeshes across main + all cascades!
     if (this.cullJobs.length > 0) {

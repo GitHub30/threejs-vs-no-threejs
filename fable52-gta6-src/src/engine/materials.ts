@@ -29,6 +29,7 @@ export class Texture {
   _disposedVersion = 0;
   _onDispose: ((t: Texture) => void) | null = null;
   isDataTexture = false;
+  isCanvasTexture = false;
   data: Uint8Array | null = null;
   width = 0;
   height = 0;
@@ -54,6 +55,7 @@ export class Texture {
 export class CanvasTexture extends Texture {
   constructor(canvas: HTMLCanvasElement) {
     super(canvas);
+    this.isCanvasTexture = true;
     this.version = 1;
   }
 }
