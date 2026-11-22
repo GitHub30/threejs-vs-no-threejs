@@ -1,0 +1,10 @@
+{
+  "name": "OSAKA CITY — Open World",
+  "short_name": "OSAKA CITY",
+  "start_url": ".",
+  "scope": ".",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#000000",
+  "theme_color": "#000000"
+}
