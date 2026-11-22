@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AETHER FLOCK — Three.js vs 自作ゲームエンジン (WebAssembly SIMD + WebGPU) 性能比較</title>
+  <meta name="description" content="同一の3D群衆シミュレーションWebアプリをThree.js v0.187とゼロ依存の自作ゲームエンジン(Rust WebAssembly SIMD128 + WebGPU)で実装し、FPS・CPU/GPUフレーム時間・ドローコール・バンドルサイズをリアルタイム比較。" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230f766e'/%3E%3Cpath d='M6 20 L16 8 L26 20 L16 16 Z' fill='%23fcfaf5'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <!-- Full-bleed 3D Benchmark Stage -->
+  <main id="stage" class="stage mode-split" aria-label="3Dエンジン比較ビューポート">
+    <section id="pane-custom" class="viewport-pane pane-custom" aria-label="自作エンジンビューポート">
+      <canvas id="canvas-custom" class="gl-canvas"></canvas>
+      <div class="hud-card hud-custom" id="hud-custom">
+        <div class="hud-header">
+          <div class="hud-title-row">
+            <span class="engine-dot dot-custom" aria-hidden="true"></span>
+            <h2 class="hud-engine-name">自作エンジン</h2>
+            <span class="hud-tag tag-custom">ライブラリ0</span>
+          </div>
+          <div class="hud-fps-block">
+            <span class="hud-fps" id="custom-fps">--</span>
+            <span class="hud-fps-unit">FPS</span>
+          </div>
+        </div>
+        <div class="hud-subline" id="custom-stack">初期化中...</div>
+        <div class="hud-metrics-grid">
+          <div class="metric-cell">
+            <span class="metric-label">Frame</span>
+            <span class="metric-val" id="custom-frame-ms">-- ms</span>
+          </div>
+          <div class="metric-cell">
+            <span class="metric-label">CPU</span>
+            <span class="metric-val" id="custom-cpu-ms">-- ms</span>
+          </div>
+          <div class="metric-cell">
+            <span class="metric-label">GPU</span>
+            <span class="metric-val" id="custom-gpu-ms">--</span>
+          </div>
+          <div class="metric-cell">
+            <span class="metric-label">P99</span>
+            <span class="metric-val" id="custom-p99-ms">-- ms</span>
+          </div>
+          <div class="metric-cell">
+            <span class="metric-label">描画数</span>
+            <span class="metric-val" id="custom-visible">--</span>
+          </div>
+          <div class="metric-cell">
+            <span class="metric-label">起動</span>
+            <span class="metric-val" id="custom-init-ms">-- ms</span>
+          </div>
+        </div>
+        <canvas id="spark-custom" class="sparkline" aria-label="自作エンジン フレーム時間推移"></canvas>
+      </div>
+    </section>
+
+    <div id="split-divider" class="split-divider" aria-hidden="true"></div>
+
+    <section id="pane-three" class="viewport-pane pane-three" aria-label="Three.jsビューポート">
+      <canvas id="canvas-three" class="gl-canvas"></canvas>
+      <div class="hud-card hud-three" id="hud-three">
+        <div class="hud-header">
+          <div class="hud-title-row">
+            <span class="engine-dot dot-three" aria-hidden="true"></span>
+            <h2 class="hud-engine-name">Three.js v0.187</h2>
+            <span class="hud-tag tag-three" id="three-backend-tag">WebGPU</span>
+          </div>
+          <div class="hud-fps-block">
+            <span class="hud-fps" id="three-fps">--</span>
+            <span class="hud-fps-unit">FPS</span>
+          </div>
+        </div>
+        <div class="hud-subline" id="three-stack">初期化中...</div>
+        <div class="hud-metrics-grid">
+          <div class="metric-cell">
+            <span class="metric-label">Frame</span>
+            <span class="metric-val" id="three-frame-ms">-- ms</span>
+          </div>
+          <div class="metric-cell">
+            <span class="metric-label">CPU</span>
+            <span class="metric-val" id="three-cpu-ms">-- ms</span>
+          </div>
+          <div class="metric-cell">
+            <span class="metric-label">GPU</span>
+            <span class="metric-val" id="three-gpu-ms">--</span>
+          </div>
+          <div class="metric-cell">
+            <span class="metric-label">P99</span>
+            <span class="metric-val" id="three-p99-ms">-- ms</span>
+          </div>
+          <div class="metric-cell">
+            <span class="metric-label">描画数</span>
+            <span class="metric-val" id="three-visible">--</span>
+          </div>
+          <div class="metric-cell">
+            <span class="metric-label">起動</span>
+            <span class="metric-val" id="three-init-ms">-- ms</span>
+          </div>
+        </div>
+        <canvas id="spark-three" class="sparkline" aria-label="Three.js フレーム時間推移"></canvas>
+      </div>
+    </section>
+  </main>
+
+  <!-- Floating Sunlit Architectural Control Header -->
+  <header class="topbar" role="banner">
+    <div class="brand">
+      <h1 class="brand-title">AETHER FLOCK</h1>
+      <span class="brand-sub">Three.js vs 自作エンジン (Wasm SIMD + WebGPU)</span>
+    </div>
+
+    <nav class="controls-strip" aria-label="ベンチマーク設定">
+      <div class="control-group" role="group" aria-label="シナリオ選択">
+        <button id="btn-sc-hybrid" class="seg-btn active" data-scenario="hybrid" title="Rust Wasm SIMD空間ハッシュ物理 vs JS + Three.js InstancedMesh">1. Hybrid (Wasm)</button>
+        <button id="btn-sc-compute" class="seg-btn" data-scenario="gpu-compute" title="共有メモリWGSLコンピュート vs Three.js TSLコンピュート">2. GPU Compute</button>
+        <button id="btn-sc-graph" class="seg-btn" data-scenario="scene-graph" title="GPURenderBundle vs Three.js Scene個別メッシュ群">3. Draw Calls</button>
+      </div>
+
+      <div class="control-group" role="group" aria-label="表示モード">
+        <button id="btn-view-split" class="seg-btn active" data-view="split">同時比較</button>
+        <button id="btn-view-custom" class="seg-btn" data-view="custom">自作のみ</button>
+        <button id="btn-view-three" class="seg-btn" data-view="three">Three.jsのみ</button>
+      </div>
+
+      <label class="select-wrap" for="select-count">
+        <span class="select-label">個体数</span>
+        <select id="select-count" class="ui-select"></select>
+      </label>
+
+      <label class="select-wrap" for="select-three-backend">
+        <span class="select-label">Three.js</span>
+        <select id="select-three-backend" class="ui-select">
+          <option value="webgpu">WebGPU</option>
+          <option value="webgl2">WebGL2</option>
+        </select>
+      </label>
+    </nav>
+
+    <div class="actions-strip">
+      <button id="btn-run-bench" class="btn-primary" type="button">自動ベンチマーク</button>
+      <button id="btn-open-report" class="btn-secondary" type="button">比較レポート</button>
+    </div>
+  </header>
+
+  <!-- Subtle Bottom Scenario Info & Interaction Hint -->
+  <footer class="bottom-bar">
+    <div class="scenario-caption">
+      <strong id="caption-title">空間ハッシュ3Dボイド物理 + 動的インスタンシング</strong>
+      <span id="caption-desc"></span>
+    </div>
+    <div class="interaction-hints">
+      <span>ドラッグ: 回転</span>
+      <span>ホイール: ズーム</span>
+      <span>マウス移動: 気流反発</span>
+      <span>Shift/右押下: 渦吸引</span>
+      <button id="btn-toggle-orbit" class="hint-toggle active" type="button">自動周回 ON</button>
+      <button id="btn-reset-sim" class="hint-toggle" type="button">シード同期リセット</button>
+    </div>
+  </footer>
+
+  <!-- Non-intrusive Automated Benchmark Progress Banner -->
+  <div id="bench-banner" class="bench-banner hidden" role="status" aria-live="polite">
+    <div class="bench-banner-head">
+      <strong id="bench-status-title">公平ベンチマーク計測中...</strong>
+      <button id="btn-cancel-bench" class="btn-ghost-sm" type="button">中断</button>
+    </div>
+    <p id="bench-status-detail" class="bench-status-detail">各エンジンを単独フルスクリーンで順番に計測し、GPU/CPU競合を排除しています。</p>
+    <div class="bench-progress-track">
+      <div id="bench-progress-fill" class="bench-progress-fill" style="width: 0%"></div>
+    </div>
+  </div>
+
+  <!-- Performance Comparison & Architecture Report Modal -->
+  <div id="report-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="report-modal-title">
+    <div class="modal-panel">
+      <div class="modal-header">
+        <div>
+          <h2 id="report-modal-title">性能比較レポート — 自作エンジン vs Three.js</h2>
+          <p class="modal-subtitle" id="report-env-info">同一シーン・同一物理アルゴリズム・単独フルスクリーン計測</p>
+        </div>
+        <div class="modal-header-actions">
+          <button id="btn-bench-current" class="btn-secondary-sm" type="button">現シナリオを再計測</button>
+          <button id="btn-bench-all" class="btn-primary-sm" type="button">全3シナリオ総合計測</button>
+          <button id="btn-close-report" class="btn-close" type="button" aria-label="閉じる">&times;</button>
+        </div>
+      </div>
+
+      <div class="modal-body" id="report-body">
+        <div id="report-empty" class="report-empty">
+          <p>まだ単独フルスクリーンでのベンチマーク結果がありません。「現シナリオを再計測」または「全3シナリオ総合計測」を実行すると、CPU・GPU競合のない正確な比較データとグラフを生成します。</p>
+        </div>
+
+        <div id="report-content" class="hidden">
+          <div class="summary-kpis" id="report-kpis"></div>
+
+          <section class="report-section">
+            <h3>CPU フレーム処理時間比較 (短いほど高速 / ms)</h3>
+            <canvas id="chart-cpu" class="bench-chart"></canvas>
+          </section>
+
+          <section class="report-section">
+            <h3>総合実効 FPS 比較 (高いほど高速)</h3>
+            <canvas id="chart-fps" class="bench-chart"></canvas>
+          </section>
+
+          <section class="report-section">
+            <h3>詳細計測テーブル</h3>
+            <div class="table-scroll">
+              <table class="metrics-table" id="report-table">
+                <thead>
+                  <tr>
+                    <th>シナリオ</th>
+                    <th>エンジン</th>
+                    <th>FPS</th>
+                    <th>Frame平均</th>
+                    <th>P99</th>
+                    <th>CPU時間</th>
+                    <th>GPU時間</th>
+                    <th>起動/コンパイル</th>
+                    <th>JSヒープ</th>
+                  </tr>
+                </thead>
+                <tbody id="report-tbody"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <!-- Static Architectural & Payload Comparison (always visible) -->
+        <section class="report-section">
+          <h3>コードサイズ・アーキテクチャ比較（Three.js以外の外部ライブラリ 0）</h3>
+          <div class="arch-grid">
+            <div class="arch-card arch-custom">
+              <h4>自作エンジン (Rust Wasm SIMD128 + Raw WebGPU)</h4>
+              <ul>
+                <li><strong>エンジン部ペイロード:</strong> ~59 KB 生 / ~17 KB gzip（Wasmバイナリ 10.8 KB, <code>#![no_std]</code> 依存クレート0）</li>
+                <li><strong>CPU最適化:</strong> 16BアラインSoA配列 + 空間ハッシュ計数ソート + SIMD128 4並列近傍探索＆フラスタムカリング（GC発生ゼロ）</li>
+                <li><strong>GPU最適化:</strong> 32B圧縮インスタンス直転送（mat4比50%帯域削減）、<code>var&lt;workgroup&gt;</code> 共有メモリタイリング(64x VRAM削減)、Early-Z前後描画、事前記録 <code>GPURenderBundle</code> 再生</li>
+              </ul>
+            </div>
+            <div class="arch-card arch-three">
+              <h4>Three.js v0.187.0 (WebGPURenderer / WebGLRenderer)</h4>
+              <ul>
+                <li><strong>エンジン部ペイロード:</strong> WebGPU+TSL版 ~3,839 KB 生 (~759 KB gzip) / WebGL2版 ~667 KB 生 (~133 KB gzip)</li>
+                <li><strong>強み:</strong> 豊富なPBRマテリアル・glTFローダー・TSLノードグラフ・WebGPU/WebGL2自動フォールバックによる圧倒的な開発生産性</li>
+                <li><strong>オーバーヘッド要因:</strong> 汎用シーングラフ走査・<code>Object3D</code>行列更新・TSLノードコンパイル時間・64B <code>InstancedMesh</code>行列転送・JS実行時のGC圧力</li>
+              </ul>
+            </div>
+          </div>
+          <p class="verdict-note">
+            <strong>技術的結論:</strong> 描画が1回の巨大な静的 <code>InstancedMesh</code> でGPU律速になる場面では両者のFPS差は小さくなりますが、<strong>大量の動的シミュレーション (Wasm SIMD)</strong>、<strong>数千単位の個別ドローコール (GPURenderBundle)</strong>、<strong>共有メモリを活用したカスタムコンピュートシェーダー</strong>、そして<strong>初回起動速度・バンドルサイズ</strong>において、Webアプリ特化の自作エンジンが明確に高性能となります。
+          </p>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
